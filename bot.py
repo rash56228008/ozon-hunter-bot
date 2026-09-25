@@ -28,8 +28,8 @@ CATEGORIES = {
     "Игрушки": "игрушки",
     "Книги": "книги",
     "Спорт": "спорт",
-    "Красота": "красота",
-    "Дом и сад": "дом и сад",
+    "Красота": "косметика",
+    "Дом и сад": "дом",
 }
 
 class SearchState(StatesGroup):
@@ -67,53 +67,46 @@ def get_query_keyboard():
         [InlineKeyboardButton(text="Пропустить", callback_data="skip_query")]
     ])
 
-async def search_ozon(category_slug: str, max_price: int = None, query: str = None):
+async def search_wb(category_slug: str, max_price: int = None, query: str = None):
     try:
         search_term = query if query else category_slug
-        url = f"https://api.ozon.ru/composer-api.bff/page/json/v2?url=/search/?text={search_term}&sort=price_asc&page=1"
+        params = {
+            "query": search_term,
+            "resultset": "catalog",
+            "limit": "50",
+            "sort": "priceup",
+            "page": "1",
+        }
+        if max_price:
+            params["priceU"] = str(max_price * 100)
 
+        url = "https://search.wb.ru/exactmatch/ru/common/v5/search"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "ru-RU,ru;q=0.9",
-            "Referer": "https://www.ozon.ru/",
-            "Origin": "https://www.ozon.ru",
-            "x-o3-app-name": "ozon-front",
-            "x-o3-app-version": "6.71.0",
-            "x-o3-device-type": "desktop",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "*/*",
+            "Origin": "https://www.wildberries.ru",
+            "Referer": "https://www.wildberries.ru/",
         }
 
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            resp = await client.get(url, headers=headers)
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(url, params=params, headers=headers)
             if resp.status_code != 200:
-                logging.warning(f"Ozon status: {resp.status_code}")
+                logging.warning(f"WB status: {resp.status_code}")
                 return []
 
             data = resp.json()
-            items = []
+            products = data.get("data", {}).get("products", [])
 
-            for key, val in data.get("widgetStates", {}).items():
-                if not any(x in key for x in ["searchResultsV2", "tileGrid", "search-results"]):
-                    continue
+            items = []
+            for p in products:
                 try:
-                    widget = json.loads(val) if isinstance(val, str) else val
-                    for item in widget.get("items", []):
-                        try:
-                            name = item.get("title", "") or item.get("name", "")
-                            price = 0
-                            price_data = item.get("price", {})
-                            if isinstance(price_data, dict):
-                                price_str = re.sub(r"[^\d]", "", str(price_data.get("price", "0")))
-                                price = int(price_str) if price_str else 0
-                            link = ""
-                            action = item.get("action", {})
-                            if isinstance(action, dict):
-                                link = "https://ozon.ru" + action.get("link", "")
-                            if name and price > 0:
-                                if max_price is None or price <= max_price:
-                                    items.append({"name": name[:80], "price": price, "link": link})
-                        except:
-                            continue
+                    name = p.get("name", "")
+                    price = p.get("salePriceU", p.get("priceU", 0)) // 100
+                    pid = p.get("id", "")
+                    link = f"https://www.wildberries.ru/catalog/{pid}/detail.aspx"
+                    if name and price > 0:
+                        if max_price is None or price <= max_price:
+                            items.append({"name": name[:80], "price": price, "link": link})
                 except:
                     continue
 
@@ -121,13 +114,13 @@ async def search_ozon(category_slug: str, max_price: int = None, query: str = No
             return items[:10]
 
     except Exception as e:
-        logging.error(f"Search error: {e}")
+        logging.error(f"WB search error: {e}")
         return []
 
 def format_results(items, category, max_price, query):
     if not items:
         return "😕 Ничего не нашёл. Попробуй другую категорию или убери фильтр цены."
-    text = f"🔍 <b>{category}</b>"
+    text = f"🔍 <b>{category}</b> · Wildberries"
     if query:
         text += f" · {query}"
     if max_price:
@@ -136,14 +129,14 @@ def format_results(items, category, max_price, query):
     for i, item in enumerate(items[:5], 1):
         text += f"{i}. <b>{item['name']}</b>\n"
         text += f"   💰 <b>{item['price']:,}₽</b>\n"
-        text += f"   <a href='{item['link']}'>Открыть на Ozon</a>\n\n"
+        text += f"   <a href='{item['link']}'>Открыть на WB</a>\n\n"
     return text
 
 @dp.message(CommandStart())
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "👋 Привет! Ищу самые дешёвые товары на Ozon.\n\nВыбери категорию:",
+        "👋 Привет! Ищу самые дешёвые товары на Wildberries.\n\nВыбери категорию:",
         reply_markup=get_categories_keyboard()
     )
 
@@ -192,7 +185,7 @@ async def skip_query(callback: CallbackQuery, state: FSMContext):
     await state.update_data(query=None)
     await callback.message.edit_text("⏳ Ищу...", reply_markup=None)
     data = await state.get_data()
-    items = await search_ozon(
+    items = await search_wb(
         CATEGORIES[data["category"]],
         data.get("max_price"),
         data.get("query")
@@ -206,7 +199,7 @@ async def skip_query(callback: CallbackQuery, state: FSMContext):
 async def run_search(message: types.Message, state: FSMContext):
     data = await state.get_data()
     msg = await message.answer("⏳ Ищу...")
-    items = await search_ozon(
+    items = await search_wb(
         CATEGORIES[data["category"]],
         data.get("max_price"),
         data.get("query")
@@ -232,10 +225,10 @@ async def monitor_prices():
     conn.close()
     for user_id, category, max_price, query in subs:
         try:
-            items = await search_ozon(CATEGORIES.get(category, category), max_price, query)
+            items = await search_wb(CATEGORIES.get(category, category), max_price, query)
             if items:
                 cheapest = items[0]
-                text = f"🔔 <b>Новая находка!</b>\n\n📂 {category}\n📦 {cheapest['name']}\n💰 <b>{cheapest['price']:,}₽</b>\n<a href='{cheapest['link']}'>Открыть на Ozon</a>"
+                text = f"🔔 <b>Новая находка!</b>\n\n📂 {category}\n📦 {cheapest['name']}\n💰 <b>{cheapest['price']:,}₽</b>\n<a href='{cheapest['link']}'>Открыть на WB</a>"
                 await bot.send_message(user_id, text, parse_mode="HTML", disable_web_page_preview=True)
         except Exception as e:
             logging.error(f"Monitor error for {user_id}: {e}")

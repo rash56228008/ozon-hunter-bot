@@ -11,7 +11,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
-from urllib.parse import quote
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 SCRAPER_KEY = os.environ.get("SCRAPER_KEY")
@@ -72,23 +71,29 @@ def get_query_keyboard():
 async def search_wb(category_slug: str, max_price: int = None, query: str = None):
     try:
         search_term = query if query else category_slug
-        encoded = quote(search_term)
-        target = f"https://search.wb.ru/exactmatch/ru/common/v5/search?query={encoded}&resultset=catalog&limit=50&sort=priceup&page=1"
-        url = f"http://api.scraperapi.com/?api_key={SCRAPER_KEY}&url={quote(target, safe='')}&country_code=ru"
-
-        logging.info(f"Searching: {search_term}")
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.get(url)
-            logging.info(f"Status: {resp.status_code}, len: {len(resp.text)}")
-
+        proxy_url = f"http://scraperapi:{SCRAPER_KEY}@proxy-server.scraperapi.com:8001"
+        params = {
+            "query": search_term,
+            "resultset": "catalog",
+            "limit": "50",
+            "sort": "priceup",
+            "page": "1",
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Referer": "https://www.wildberries.ru/",
+            "Origin": "https://www.wildberries.ru",
+        }
+        logging.info(f"Searching WB: {search_term}")
+        async with httpx.AsyncClient(timeout=45, proxies={"http://": proxy_url, "https://": proxy_url}, verify=False) as client:
+            resp = await client.get("https://search.wb.ru/exactmatch/ru/common/v5/search", params=params, headers=headers)
+            logging.info(f"WB status: {resp.status_code}, len: {len(resp.text)}")
             if resp.status_code != 200:
                 return []
-
             data = resp.json()
             products = data.get("data", {}).get("products", [])
-            logging.info(f"Products found: {len(products)}")
-
+            logging.info(f"Products: {len(products)}")
             items = []
             for p in products:
                 try:
@@ -101,10 +106,8 @@ async def search_wb(category_slug: str, max_price: int = None, query: str = None
                             items.append({"name": name[:80], "price": price, "link": link})
                 except:
                     continue
-
             items.sort(key=lambda x: x["price"])
             return items[:10]
-
     except Exception as e:
         logging.error(f"WB search error: {e}")
         return []
@@ -127,20 +130,13 @@ def format_results(items, category, max_price, query):
 @dp.message(CommandStart())
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer(
-        "👋 Привет! Ищу самые дешёвые товары на Wildberries.\n\nВыбери категорию:",
-        reply_markup=get_categories_keyboard()
-    )
+    await message.answer("👋 Привет! Ищу самые дешёвые товары на Wildberries.\n\nВыбери категорию:", reply_markup=get_categories_keyboard())
 
 @dp.callback_query(F.data.startswith("cat:"))
 async def category_chosen(callback: CallbackQuery, state: FSMContext):
     category = callback.data.split(":", 1)[1]
     await state.update_data(category=category)
-    await callback.message.edit_text(
-        f"📂 Категория: <b>{category}</b>\n\nУкажи максимальную цену в рублях (или пропусти):",
-        reply_markup=get_price_keyboard(),
-        parse_mode="HTML"
-    )
+    await callback.message.edit_text(f"📂 Категория: <b>{category}</b>\n\nУкажи максимальную цену в рублях (или пропусти):", reply_markup=get_price_keyboard(), parse_mode="HTML")
     await state.set_state(SearchState.waiting_for_price)
     await callback.answer()
 
@@ -151,19 +147,13 @@ async def price_entered(message: types.Message, state: FSMContext):
         await message.answer("Введи число, например: 1000")
         return
     await state.update_data(max_price=int(text))
-    await message.answer(
-        "🔎 Хочешь уточнить поиск? Напиши ключевое слово (или пропусти):",
-        reply_markup=get_query_keyboard()
-    )
+    await message.answer("🔎 Хочешь уточнить поиск? Напиши ключевое слово (или пропусти):", reply_markup=get_query_keyboard())
     await state.set_state(SearchState.waiting_for_query)
 
 @dp.callback_query(F.data == "skip_price")
 async def skip_price(callback: CallbackQuery, state: FSMContext):
     await state.update_data(max_price=None)
-    await callback.message.edit_text(
-        "🔎 Хочешь уточнить поиск? Напиши ключевое слово (или пропусти):",
-        reply_markup=get_query_keyboard(),
-    )
+    await callback.message.edit_text("🔎 Хочешь уточнить поиск? Напиши ключевое слово (или пропусти):", reply_markup=get_query_keyboard())
     await state.set_state(SearchState.waiting_for_query)
     await callback.answer()
 
@@ -177,11 +167,7 @@ async def skip_query(callback: CallbackQuery, state: FSMContext):
     await state.update_data(query=None)
     await callback.message.edit_text("⏳ Ищу...", reply_markup=None)
     data = await state.get_data()
-    items = await search_wb(
-        CATEGORIES[data["category"]],
-        data.get("max_price"),
-        data.get("query")
-    )
+    items = await search_wb(CATEGORIES[data["category"]], data.get("max_price"), data.get("query"))
     text = format_results(items, data["category"], data.get("max_price"), data.get("query"))
     await callback.message.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
     save_subscription(callback.from_user.id, data["category"], data.get("max_price"), data.get("query"))
@@ -191,11 +177,7 @@ async def skip_query(callback: CallbackQuery, state: FSMContext):
 async def run_search(message: types.Message, state: FSMContext):
     data = await state.get_data()
     msg = await message.answer("⏳ Ищу...")
-    items = await search_wb(
-        CATEGORIES[data["category"]],
-        data.get("max_price"),
-        data.get("query")
-    )
+    items = await search_wb(CATEGORIES[data["category"]], data.get("max_price"), data.get("query"))
     text = format_results(items, data["category"], data.get("max_price"), data.get("query"))
     await msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
     save_subscription(message.from_user.id, data["category"], data.get("max_price"), data.get("query"))
@@ -205,8 +187,7 @@ def save_subscription(user_id, category, max_price, query):
     conn = sqlite3.connect("bot.db")
     c = conn.cursor()
     c.execute("DELETE FROM subscriptions WHERE user_id=? AND category=?", (user_id, category))
-    c.execute("INSERT INTO subscriptions VALUES (?,?,?,?,?)",
-              (user_id, category, max_price, query, ""))
+    c.execute("INSERT INTO subscriptions VALUES (?,?,?,?,?)", (user_id, category, max_price, query, ""))
     conn.commit()
     conn.close()
 

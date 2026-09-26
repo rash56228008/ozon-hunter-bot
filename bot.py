@@ -77,6 +77,7 @@ def _sync_search_wb(search_term: str, max_price: int = None):
             "url": f"https://search.wb.ru/exactmatch/ru/common/v5/search?query={requests.utils.quote(search_term)}&resultset=catalog&limit=50&sort=priceup&page=1",
             "country_code": "ru",
             "keep_headers": "true",
+            "premium": "true",
         }
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",

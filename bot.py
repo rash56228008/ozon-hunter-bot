@@ -2,7 +2,6 @@ import asyncio
 import logging
 import sqlite3
 import httpx
-import re
 import json
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
@@ -12,8 +11,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
+from urllib.parse import quote
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+SCRAPER_KEY = os.environ.get("SCRAPER_KEY")
+
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
@@ -69,67 +71,23 @@ def get_query_keyboard():
 
 async def search_wb(category_slug: str, max_price: int = None, query: str = None):
     try:
-        SCRAPER_KEY = os.environ.get("SCRAPER_KEY")
         search_term = query if query else category_slug
-        
-        target_url = f"https://search.wb.ru/exactmatch/ru/common/v5/search?query={search_term}&resultset=catalog&limit=50&sort=priceup&page=1"
-        
-        url = f"http://api.scraperapi.com/?api_key={SCRAPER_KEY}&url={target_url}&country_code=ru"
+        encoded = quote(search_term)
+        target = f"https://search.wb.ru/exactmatch/ru/common/v5/search?query={encoded}&resultset=catalog&limit=50&sort=priceup&page=1"
+        url = f"http://api.scraperapi.com/?api_key={SCRAPER_KEY}&url={quote(target, safe='')}&country_code=ru"
+
+        logging.info(f"Searching: {search_term}")
 
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(url)
+            logging.info(f"Status: {resp.status_code}, len: {len(resp.text)}")
+
             if resp.status_code != 200:
-                logging.warning(f"ScraperAPI status: {resp.status_code}")
                 return []
 
             data = resp.json()
             products = data.get("data", {}).get("products", [])
-
-            items = []
-            for p in products:
-                try:
-                    name = p.get("name", "")
-                    price = p.get("salePriceU", p.get("priceU", 0)) // 100
-                    pid = p.get("id", "")
-                    link = f"https://www.wildberries.ru/catalog/{pid}/detail.aspx"
-                    if name and price > 0:
-                        if max_price is None or price <= max_price:
-                            items.append({"name": name[:80], "price": price, "link": link})
-                except:
-                    continue
-
-            items.sort(key=lambda x: x["price"])
-            return items[:10]
-
-    except Exception as e:
-        logging.error(f"WB search error: {e}")
-        return []
-        params = {
-            "query": search_term,
-            "resultset": "catalog",
-            "limit": "50",
-            "sort": "priceup",
-            "page": "1",
-        }
-        if max_price:
-            params["priceU"] = str(max_price * 100)
-
-        url = "https://search.wb.ru/exactmatch/ru/common/v5/search"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "*/*",
-            "Origin": "https://www.wildberries.ru",
-            "Referer": "https://www.wildberries.ru/",
-        }
-
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(url, params=params, headers=headers)
-            if resp.status_code != 200:
-                logging.warning(f"WB status: {resp.status_code}")
-                return []
-
-            data = resp.json()
-            products = data.get("data", {}).get("products", [])
+            logging.info(f"Products found: {len(products)}")
 
             items = []
             for p in products:
